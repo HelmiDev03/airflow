@@ -27,7 +27,6 @@ from unittest import mock
 
 import pendulum
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import joinedload
 
@@ -6928,15 +6927,8 @@ class TestBulkTaskInstances(TestTaskInstanceEndpoint):
                 SimpleAuthManagerUser(username="limited-user", role="user", teams=[]),
             )
         )
-        with (
-            mock.patch("airflow.models.revoked_token.RevokedToken.is_revoked", return_value=False),
-            TestClient(
-                test_client.app,
-                headers={"Authorization": f"Bearer {token}"},
-                base_url=str(test_client.base_url),
-            ) as limited_test_client,
-        ):
-            response = limited_test_client.patch(
+        with mock.patch("airflow.models.revoked_token.RevokedToken.is_revoked", return_value=False):
+            response = test_client.patch(
                 self.WILDCARD_ENDPOINT,
                 json={
                     "actions": [
@@ -6959,6 +6951,7 @@ class TestBulkTaskInstances(TestTaskInstanceEndpoint):
                         }
                     ]
                 },
+                headers={"Authorization": f"Bearer {token}"},
             )
 
         assert response.status_code == 200
@@ -7003,15 +6996,8 @@ class TestBulkTaskInstances(TestTaskInstanceEndpoint):
                 SimpleAuthManagerUser(username="limited-user", role="user", teams=[]),
             )
         )
-        with (
-            mock.patch("airflow.models.revoked_token.RevokedToken.is_revoked", return_value=False),
-            TestClient(
-                test_client.app,
-                headers={"Authorization": f"Bearer {token}"},
-                base_url=str(test_client.base_url),
-            ) as limited_test_client,
-        ):
-            response = limited_test_client.patch(
+        with mock.patch("airflow.models.revoked_token.RevokedToken.is_revoked", return_value=False):
+            response = test_client.patch(
                 self.WILDCARD_ENDPOINT,
                 json={
                     "actions": [
@@ -7032,6 +7018,7 @@ class TestBulkTaskInstances(TestTaskInstanceEndpoint):
                         }
                     ]
                 },
+                headers={"Authorization": f"Bearer {token}"},
             )
 
         assert response.status_code == 200

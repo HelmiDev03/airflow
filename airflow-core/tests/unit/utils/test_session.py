@@ -58,10 +58,17 @@ class TestSession:
 
     @pytest.mark.asyncio
     async def test_async_session(self):
+        from airflow import settings
         from airflow.settings import AsyncSession
 
-        session = AsyncSession()
-        session.add(Log(event="hihi1234"))
-        await session.commit()
-        my_special_log_event = await session.scalar(select(Log).where(Log.event == "hihi1234").limit(1))
-        assert my_special_log_event.event == "hihi1234"
+        try:
+            async with AsyncSession() as session:
+                session.add(Log(event="hihi1234"))
+                await session.commit()
+                my_special_log_event = await session.scalar(
+                    select(Log).where(Log.event == "hihi1234").limit(1)
+                )
+                assert my_special_log_event.event == "hihi1234"
+        finally:
+            await settings.dispose_async_orm()
+            settings._configure_async_session()
