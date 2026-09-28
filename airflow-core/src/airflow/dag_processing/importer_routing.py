@@ -36,6 +36,7 @@ from airflow.sdk.importers import (
     DagImporterRegistry,
     DagImportError,
     DagImportResult,
+    DagSourceCode,
     FilesystemDagDefinition,
     PythonDagImporter,
     ZipImporter,
@@ -223,9 +224,9 @@ def iter_claimed_results(
         yield result
 
 
-def read_claimed_source(fileloc: str, bundle_name: str | None) -> str | None:
+def read_claimed_source(fileloc: str, bundle_name: str | None) -> DagSourceCode | None:
     """
-    Return the Dag source of a claimed file, read through its importer.
+    Return the Dag source and language of a claimed file, read through its importer.
 
     Returns ``None`` when no Task SDK importer claims the file.
 
@@ -234,4 +235,4 @@ def read_claimed_source(fileloc: str, bundle_name: str | None) -> str | None:
     registry = get_task_sdk_registry(bundle_name)
     if registry is None or (importer := claimed_importer(registry, fileloc)) is None:
         return None
-    return importer.get_source_code(FilesystemDagDefinition(Path(fileloc))).source_code
+    return importer.get_source_code(FilesystemDagDefinition(Path(fileloc)))

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -44,6 +45,10 @@ if TYPE_CHECKING:
     from airflow.models.dag_version import DagVersion
 
 log = logging.getLogger(__name__)
+
+# Stored when a claimed file's importer cannot supply its source. Never empty, since an empty
+# source makes ``DagCode.__init__`` fall back to the source stored for the previous version.
+SOURCE_UNAVAILABLE = "Source code is not available for this Dag.\n"
 
 
 class DagCode(Base):
@@ -75,11 +80,14 @@ class DagCode(Base):
     dag_version = relationship("DagVersion", back_populates="dag_code", uselist=False)
     __table_args__ = (Index("idx_dag_code_dag_id_last_updated", dag_id, last_updated),)
 
-    def __init__(self, dag_version, full_filepath: str, source_code: str | None = None):
+    def __init__(
+        self, dag_version, full_filepath: str, source_code: str | None = None, language: str = "python"
+    ):
         self.dag_version = dag_version
         self.fileloc = full_filepath
         self.source_code = source_code or DagCode.code(self.dag_version.dag_id)
         self.source_code_hash = self.dag_source_hash(self.source_code)
+        self.language = language
         self.dag_id = dag_version.dag_id
 
     @classmethod
@@ -92,7 +100,8 @@ class DagCode(Base):
         :param session: ORM Session
         """
         log.debug("Writing DAG file %s into DagCode table", fileloc)
-        dag_code = DagCode(dag_version, fileloc, cls.get_code_from_file(fileloc))
+        source_code, language = cls._read_source(fileloc, dag_version.bundle_name)
+        dag_code = DagCode(dag_version, fileloc, source_code, language)
         session.add(dag_code)
         log.debug("DAG file %s written into DagCode table", fileloc)
         return dag_code
@@ -120,6 +129,28 @@ class DagCode(Base):
         :return: source code as string
         """
         return cls._get_code_from_db(dag_id, session=session)
+
+    @classmethod
+    def _read_source(cls, fileloc: str, bundle_name: str | None) -> tuple[str, str]:
+        """
+        Read a Dag file's source and language.
+
+        A file that a Task SDK importer claims is read through that importer. Any other file, and the
+        placeholder stored when the importer cannot supply a source, is recorded as Python.
+        """
+        if Path(fileloc).suffix.lower() not in (".py", ".pyc"):
+            from airflow.dag_processing.importer_routing import read_claimed_source
+
+            try:
+                source = read_claimed_source(fileloc, bundle_name)
+            except Exception:
+                log.exception("Cannot read the Dag source of %s", fileloc)
+                return SOURCE_UNAVAILABLE, "python"
+            if source is not None:
+                if not source.source_code:
+                    return SOURCE_UNAVAILABLE, "python"
+                return source.source_code, source.language
+        return cls.get_code_from_file(fileloc), "python"
 
     @staticmethod
     def get_code_from_file(fileloc):
@@ -177,23 +208,33 @@ class DagCode(Base):
 
     @classmethod
     @provide_session
-    def update_source_code(cls, dag_id: str, fileloc: str, *, session: Session = NEW_SESSION) -> None:
+    def update_source_code(
+        cls,
+        dag_id: str,
+        fileloc: str,
+        *,
+        bundle_name: str | None = None,
+        session: Session = NEW_SESSION,
+    ) -> None:
         """
         Check if the source code of the DAG has changed and update it if needed.
 
         :param dag_id: Dag ID
         :param fileloc: The path of code file to read the code from
+        :param bundle_name: The Dag bundle of the file, whose importers may read its source
         :param session: The database session.
         :return: None
         """
         latest_dagcode = cls.get_latest_dagcode(dag_id, session=session)
         if not latest_dagcode:
             return
-        new_source_code = cls.get_code_from_file(fileloc)
+        new_source_code, new_language = cls._read_source(fileloc, bundle_name)
         new_source_code_hash = cls.dag_source_hash(new_source_code)
         if new_source_code_hash != latest_dagcode.source_code_hash:
             latest_dagcode.source_code = new_source_code
             latest_dagcode.source_code_hash = new_source_code_hash
+        if new_language != latest_dagcode.language:
+            latest_dagcode.language = new_language
         # Keep fileloc aligned even when the contents are unchanged (e.g. the file was moved/renamed).
         if fileloc != latest_dagcode.fileloc:
             latest_dagcode.fileloc = fileloc
