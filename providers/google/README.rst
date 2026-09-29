@@ -108,7 +108,7 @@ PIP package                                 Version required
 ``google-cloud-pubsub``                     ``>=2.36.0``
 ``google-cloud-redis``                      ``>=2.21.0``
 ``google-cloud-secret-manager``             ``>=2.27.0``
-``google-cloud-spanner``                    ``>=3.63.0``
+``google-cloud-spanner``                    ``>=3.64.0``
 ``google-cloud-speech``                     ``>=2.38.0``
 ``google-cloud-storage``                    ``>=3.10.1``
 ``google-cloud-storage-transfer``           ``>=1.20.0``
