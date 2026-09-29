@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Path
 from pydantic import BaseModel, Field
@@ -76,6 +77,9 @@ class EdgeJobFetched(EdgeJobBase):
         ),
     ]
     concurrency_slots: Annotated[int, Field(description="Number of concurrency slots the job requires.")]
+    task_instance_id: UUID | None = Field(
+        default=None, description="Attempt UUID required when reporting this job's state."
+    )
 
     @property
     def identifier(self) -> str:

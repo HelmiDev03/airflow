@@ -389,6 +389,7 @@ class EdgeWorker:
             ),
             "airflow_version": airflow_version,
             "edge_provider_version": edge_provider_version,
+            "supports_task_instance_uuid": True,
             "python_version": sys.version,
             "worker_start_time": self.worker_start_time,
             "concurrency": self.concurrency,
@@ -689,7 +690,9 @@ class EdgeWorker:
         job = self._launch_job(edge_job, workload, logfile)
         self.jobs.append(job)
         try:
-            await jobs_set_state(edge_job.key, TaskInstanceState.RUNNING)
+            await jobs_set_state(
+                edge_job.key, TaskInstanceState.RUNNING, task_instance_id=edge_job.task_instance_id
+            )
 
             # As we got one job, directly fetch another one if possible
             if self.free_concurrency > 0:
@@ -707,7 +710,11 @@ class EdgeWorker:
 
             if job.is_success:
                 logger.info("Job completed: %s", job.edge_job.identifier)
-                await jobs_set_state(job.edge_job.key, TaskInstanceState.SUCCESS)
+                await jobs_set_state(
+                    job.edge_job.key,
+                    TaskInstanceState.SUCCESS,
+                    task_instance_id=job.edge_job.task_instance_id,
+                )
             else:
                 ex_txt = job.failure_details()
                 logger.error("Job failed: %s with:\n%s", job.edge_job.identifier, ex_txt)
@@ -718,7 +725,9 @@ class EdgeWorker:
                     log_chunk_time=timezone.utcnow(),
                     log_chunk_data=f"Error executing job:\n{ex_txt}",
                 )
-                await jobs_set_state(job.edge_job.key, TaskInstanceState.FAILED)
+                await jobs_set_state(
+                    job.edge_job.key, TaskInstanceState.FAILED, task_instance_id=job.edge_job.task_instance_id
+                )
         finally:
             self.jobs.remove(job)
             # Cleanup temp files used for the job

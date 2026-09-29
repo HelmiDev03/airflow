@@ -84,6 +84,44 @@ class TestJobsApiRoutes:
         session.execute(delete(EdgeJobModel))
         session.execute(delete(EdgeWorkerModel))
         session.commit()
+        yield
+        session.execute(delete(EdgeJobModel))
+        session.execute(delete(EdgeWorkerModel))
+        session.commit()
+
+    @pytest.mark.parametrize("uuid_worker", [False, True])
+    def test_fetch_uuid_job_requires_worker_capability(self, session, uuid_worker):
+        task_id = uuid4()
+        worker = EdgeWorkerModel(
+            worker_name="uuid_worker",
+            state=EdgeWorkerState.IDLE,
+            queues=[QUEUE],
+        )
+        worker.sysinfo = {"supports_task_instance_uuid": uuid_worker}
+        job = EdgeJobModel(
+            dag_id=DAG_ID,
+            task_id=TASK_ID,
+            run_id=RUN_ID,
+            try_number=1,
+            map_index=-1,
+            task_instance_id=str(task_id),
+            state=TaskInstanceState.QUEUED,
+            queue=QUEUE,
+            concurrency_slots=1,
+            command=MOCK_COMMAND_STR,
+        )
+        session.add_all([worker, job])
+        session.flush()
+        body = WorkerQueuesBody(free_concurrency=1, queues=[QUEUE])
+        if uuid_worker:
+            result = fetch("uuid_worker", body, session)
+            assert result.task_instance_id == task_id
+            assert job.state == TaskInstanceState.RESTARTING
+        else:
+            with pytest.raises(HTTPException) as error:
+                fetch("uuid_worker", body, session)
+            assert error.value.status_code == 409
+            assert job.state == TaskInstanceState.QUEUED
 
     @patch(f"{Stats.__module__}.Stats.incr")
     def test_state(self, mock_stats_incr, session: Session):

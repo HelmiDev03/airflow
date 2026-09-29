@@ -18,9 +18,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated
+from uuid import UUID
 
 from fastapi import Body, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from airflow.api_fastapi.common.db.common import SessionDep  # noqa: TC001
 from airflow.api_fastapi.common.router import AirflowRouter
@@ -64,6 +65,7 @@ def parse_command(command: str, dag_id: str, run_id: str) -> ExecuteTypeBody:
             status.HTTP_400_BAD_REQUEST,
             status.HTTP_403_FORBIDDEN,
             status.HTTP_404_NOT_FOUND,
+            status.HTTP_409_CONFLICT,
         ]
     ),
 )
@@ -100,6 +102,10 @@ def fetch(
     job: EdgeJobModel | None = session.scalar(query)
     if not job:
         return None
+    if job.task_instance_id and not (worker.sysinfo or {}).get("supports_task_instance_uuid"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Upgrade this Edge worker to report task-instance UUIDs."
+        )
     job.state = TaskInstanceState.RESTARTING  # keep this intermediate state until worker sets to running
     job.edge_worker = worker_name
     job.last_update = timezone.utcnow()
@@ -117,6 +123,7 @@ def fetch(
         try_number=job.try_number,
         command=parse_command(job.command, job.dag_id, job.run_id),
         concurrency_slots=job.concurrency_slots,
+        task_instance_id=UUID(job.task_instance_id) if job.task_instance_id else None,
     )
 
 
@@ -138,41 +145,34 @@ def state(
     map_index: Annotated[int, WorkerApiDocs.map_index],
     state: Annotated[TaskInstanceState, WorkerApiDocs.state],
     session: SessionDep,
+    task_instance_id: Annotated[UUID | None, Body(embed=True)] = None,
 ) -> None:
     """Update the state of a job running on the edge worker."""
-    # execute query to catch the queue and check if state toggles to success or failed
-    # otherwise possible that Executor resets orphaned jobs and stats are exported 2 times
-    if state in [TaskInstanceState.SUCCESS, state == TaskInstanceState.FAILED]:
-        query = select(EdgeJobModel).where(
-            EdgeJobModel.dag_id == dag_id,
-            EdgeJobModel.task_id == task_id,
-            EdgeJobModel.run_id == run_id,
-            EdgeJobModel.map_index == map_index,
-            EdgeJobModel.try_number == try_number,
-            EdgeJobModel.state == TaskInstanceState.RUNNING,
-        )
-        job = session.scalar(query)
-
-        if job:
-            # Edge worker does not backport emitted Airflow metrics, so export some metrics
-            tags = {
-                "dag_id": job.dag_id,
-                "task_id": job.task_id,
-                "queue": job.queue,
-                "state": str(state),
-                "team_name": job.team_name,
-            }
-            Stats.incr("edge_worker.ti.finish", tags=prune_dict(tags))
-
-    query2 = (
-        update(EdgeJobModel)
+    job = session.scalar(
+        select(EdgeJobModel)
         .where(
             EdgeJobModel.dag_id == dag_id,
             EdgeJobModel.task_id == task_id,
             EdgeJobModel.run_id == run_id,
             EdgeJobModel.map_index == map_index,
             EdgeJobModel.try_number == try_number,
+            EdgeJobModel.task_instance_id == (str(task_instance_id) if task_instance_id else ""),
         )
-        .values(state=state, last_update=timezone.utcnow())
+        .with_for_update()
     )
-    session.execute(query2)
+    if job is None:
+        return
+    if job.state == TaskInstanceState.RUNNING and state in (
+        TaskInstanceState.SUCCESS,
+        TaskInstanceState.FAILED,
+    ):
+        tags = {
+            "dag_id": job.dag_id,
+            "task_id": job.task_id,
+            "queue": job.queue,
+            "state": str(state),
+            "team_name": job.team_name,
+        }
+        Stats.incr("edge_worker.ti.finish", tags=prune_dict(tags))
+    job.state = state
+    job.last_update = timezone.utcnow()

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 from unittest.mock import call, patch
+from uuid import uuid4
 
 import anyio
 import pytest
@@ -508,12 +509,13 @@ class TestEdgeWorker:
 
     @patch("airflow.providers.edge3.cli.worker.jobs_fetch")
     @patch("airflow.providers.edge3.cli.worker.EdgeWorker._launch_job")
-    @patch("airflow.providers.edge3.cli.worker.jobs_set_state")
+    @patch("airflow.providers.edge3.cli.worker.jobs_set_state", autospec=True)
     @patch("airflow.providers.edge3.cli.worker.EdgeWorker._push_logs_in_chunks")
     @patch("airflow.providers.edge3.cli.worker.logs_push")
     @patch.object(Job, "is_running", property(lambda _: False))
     @patch.object(Job, "is_success", property(lambda _: True))
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("uuid_job", [False, True])
     async def test_fetch_and_run_job_one_job(
         self,
         mock_logs_push,
@@ -523,8 +525,11 @@ class TestEdgeWorker:
         mock_jobs_fetch,
         tmp_path: Path,
         worker_with_job: EdgeWorker,
+        uuid_job,
     ):
+        task_instance_id = uuid4() if uuid_job else None
         edge_job = EdgeJobFetched(
+            task_instance_id=task_instance_id,
             dag_id="test",
             task_id="test",
             run_id="test",
@@ -546,13 +551,16 @@ class TestEdgeWorker:
         mock_launch_job.assert_called_once_with(
             edge_job, edge_job.command, Path(worker_with_job.base_log_folder, "mock.log")
         )
-        assert mock_jobs_set_state.call_count == 2
+        assert mock_jobs_set_state.call_args_list == [
+            call(edge_job.key, TaskInstanceState.RUNNING, task_instance_id=task_instance_id),
+            call(edge_job.key, TaskInstanceState.SUCCESS, task_instance_id=task_instance_id),
+        ]
         mock_push_log_chunks.assert_called_once()
         assert len(worker_with_job.jobs) == 1  # no new job added (was removed at the end...)
         mock_logs_push.assert_not_called()
 
     @patch("airflow.providers.edge3.cli.worker.jobs_fetch")
-    @patch("airflow.providers.edge3.cli.worker.jobs_set_state")
+    @patch("airflow.providers.edge3.cli.worker.jobs_set_state", autospec=True)
     @patch("airflow.providers.edge3.cli.worker.EdgeWorker._push_logs_in_chunks")
     @patch("airflow.providers.edge3.cli.worker.logs_push")
     @pytest.mark.asyncio
@@ -565,7 +573,9 @@ class TestEdgeWorker:
         tmp_path: Path,
         worker_with_job: EdgeWorker,
     ):
+        task_instance_id = uuid4()
         edge_job = EdgeJobFetched(
+            task_instance_id=task_instance_id,
             dag_id="test",
             task_id="test",
             run_id="test",
@@ -588,7 +598,9 @@ class TestEdgeWorker:
 
         mock_jobs_fetch.assert_called_once()
         mock_push_log_chunks.assert_called_once()
-        assert mock_jobs_set_state.call_args_list[-1].args[1] == TaskInstanceState.FAILED
+        mock_jobs_set_state.assert_called_with(
+            edge_job.key, TaskInstanceState.FAILED, task_instance_id=task_instance_id
+        )
         log_chunk_data = mock_logs_push.call_args.kwargs["log_chunk_data"]
         assert "Task fork exited with code 1" in log_chunk_data
         assert "RuntimeError: supervisor crashed" in log_chunk_data
